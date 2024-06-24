@@ -87,6 +87,13 @@ def get_llama_proxy():
             llama_outer_lock.release()
 
 
+_ping_message_factory = None
+
+def set_ping_message_factory(factory):
+   global  _ping_message_factory
+   _ping_message_factory = factory
+
+
 def create_app(
     settings: Settings | None = None,
     server_settings: ServerSettings | None = None,
@@ -125,6 +132,7 @@ def create_app(
         middleware=middleware,
         title="🦙 llama.cpp Python API",
         version=llama_cpp.__version__,
+        root_path=server_settings.root_path,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -137,6 +145,9 @@ def create_app(
 
     assert model_settings is not None
     set_llama_proxy(model_settings=model_settings)
+
+    if server_settings.disable_ping_events:
+        set_ping_message_factory(lambda: bytes())
 
     return app
 
@@ -264,6 +275,7 @@ async def create_completion(
         "best_of",
         "logit_bias_type",
         "user",
+        "min_tokens",
     }
     kwargs = body.model_dump(exclude=exclude)
 
@@ -276,6 +288,15 @@ async def create_completion(
 
     if body.grammar is not None:
         kwargs["grammar"] = llama_cpp.LlamaGrammar.from_string(body.grammar)
+
+    if body.min_tokens > 0:
+        _min_tokens_logits_processor = llama_cpp.LogitsProcessorList(
+            [llama_cpp.MinTokensLogitsProcessor(body.min_tokens, llama.token_eos())]
+        )
+        if "logits_processor" not in kwargs:
+            kwargs["logits_processor"] = _min_tokens_logits_processor
+        else:
+            kwargs["logits_processor"].extend(_min_tokens_logits_processor)
 
     iterator_or_completion: Union[
         llama_cpp.CreateCompletionResponse,
@@ -302,6 +323,7 @@ async def create_completion(
                 iterator=iterator(),
             ),
             sep="\n",
+            ping_message_factory=_ping_message_factory,
         )
     else:
         return iterator_or_completion
@@ -433,6 +455,7 @@ async def create_chat_completion(
         "n",
         "logit_bias_type",
         "user",
+        "min_tokens",
     }
     kwargs = body.model_dump(exclude=exclude)
     llama = llama_proxy(body.model)
@@ -445,6 +468,15 @@ async def create_chat_completion(
 
     if body.grammar is not None:
         kwargs["grammar"] = llama_cpp.LlamaGrammar.from_string(body.grammar)
+
+    if body.min_tokens > 0:
+        _min_tokens_logits_processor = llama_cpp.LogitsProcessorList(
+            [llama_cpp.MinTokensLogitsProcessor(body.min_tokens, llama.token_eos())]
+        )
+        if "logits_processor" not in kwargs:
+            kwargs["logits_processor"] = _min_tokens_logits_processor
+        else:
+            kwargs["logits_processor"].extend(_min_tokens_logits_processor)
 
     iterator_or_completion: Union[
         llama_cpp.ChatCompletion, Iterator[llama_cpp.ChatCompletionChunk]
@@ -470,6 +502,7 @@ async def create_chat_completion(
                 iterator=iterator(),
             ),
             sep="\n",
+            ping_message_factory=_ping_message_factory,
         )
     else:
         return iterator_or_completion
